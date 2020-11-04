@@ -44,7 +44,9 @@ jobs:
       - mypy src/aws_foo_bar/ --strict --implicit-reexport
   - stage: deploy
     python: "3.7"
-    script: cd $(bash before_deploy.sh)
+    script:
+      - cd $(bash before_deploy.sh)
+      - pwd
     deploy:
       provider: pypi
       user: aws-cloudformation-developers
