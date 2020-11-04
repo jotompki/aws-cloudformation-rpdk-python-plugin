@@ -53,5 +53,6 @@ jobs:
       password:
         secure: "KlHpHJLuESNhri/Y5TX26eZQ3T7+UEizITImckabioc7Vqk6IYxQAJNy/wJrtETcTcH0wB6zWYhp6lchs32T9zfYVIo5+WjHVFmmY83IAgmBd6eqs+UAUojJA2ev2jnzeFPQsluWyiWh/UX8HBzanZ15v509qEuM+KSkeEXtI5WTcxUiXiLqunwmjOZR1aO5QX4egJz0nUdF1hzBsI3EFZYLgY/lWT73hwNPPzwZ4HwvYCZejx6/2nGDh/BCTfquODv6wo5uJUkfQgrSfcaauf7voxi4AiFLB095kFU6L/wtKkbmsFSdVwhpriOYz0GLq7DYpsQC1S17oS1Ba9b6hKwfwxX/P7nDxgoG8QFc5ppz3bpmDqCr+xFiyyFDbPS9kIdkcJps7hAGbNBVM87p/lqXc/XUIjQeCmo5D3tz8ILn9iUOaBx3bp3geCsVCrTqsTdUmz2aZcD9SMhviwFGG/0MYLQf8tXhSYrwaATBX9qBhl3PKheVO6AuHwjS79lqWjWaPCdt/nqAyYO13yaLIRWM0VbQJMV8hfViYKtez8G1J1hR0QJExdHcAGXhSXxmrWpGFb/Ip37Lo4R7RSQYkgxl8PPB8+vbKcBIiE9R7jt/dqYO1+G1jGQpkz4zkfi0a7/nlj4Eot5OskD9cphlLKG9byt7B5zN8SN0JuZrMAI="
       server: https://test.pypi.org/legacy/
+      distributions: sdist bdist_wheel
       on:
         tags: true
