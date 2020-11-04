@@ -27,6 +27,7 @@ setup(
     version=find_version("python", "rpdk", "python", "__init__.py"),
     description=__doc__,
     long_description=read("README.md"),
+    long_description_content_type="text/markdown",
     author="Amazon Web Services",
     author_email="aws-cloudformation-developers@amazon.com",
     url="https://github.com/aws-cloudformation/aws-cloudformation-rpdk-python-plugin/",
@@ -37,16 +38,20 @@ setup(
     include_package_data=True,
     zip_safe=True,
     python_requires=">=3.6",
-    install_requires=["cloudformation-cli>=0.1,<0.2", "docker>=3.7,<3.8"],
+    install_requires=["cloudformation-cli>=0.1.10,<0.2", "docker>=3.7,<5"],
     entry_points={
         "rpdk.v1.languages": [
             "python37 = rpdk.python.codegen:Python37LanguagePlugin",
             "python36 = rpdk.python.codegen:Python36LanguagePlugin",
-        ]
+        ],
+        "rpdk.v1.parsers": [
+            "python37 = rpdk.python.parser:setup_subparser_python37",
+            "python36 = rpdk.python.parser:setup_subparser_python36",
+        ],
     },
     license="Apache License 2.0",
     classifiers=[
-        "Development Status :: 2 - Pre-Alpha",
+        "Development Status :: 5 - Production/Stable",
         "Environment :: Console",
         "Intended Audience :: Developers",
         "License :: OSI Approved :: Apache Software License",

@@ -1,38 +1,35 @@
 # pylint: disable=redefined-outer-name,protected-access
+from dataclasses import dataclass
 from datetime import datetime
 from unittest.mock import Mock, call, patch, sentinel
 
 import pytest
-from cloudformation_cli_python_lib.exceptions import InvalidRequest
+from cloudformation_cli_python_lib.exceptions import InternalFailure, InvalidRequest
 from cloudformation_cli_python_lib.interface import (
     Action,
+    BaseModel,
     HandlerErrorCode,
     OperationStatus,
     ProgressEvent,
 )
 from cloudformation_cli_python_lib.resource import Resource, _ensure_serialize
+from cloudformation_cli_python_lib.utils import Credentials, HandlerRequest
 
 ENTRYPOINT_PAYLOAD = {
     "awsAccountId": "123456789012",
     "bearerToken": "123456",
     "region": "us-east-1",
     "action": "CREATE",
-    "responseEndpoint": "cloudformation.us-west-2.amazonaws.com",
+    "responseEndpoint": None,
     "resourceType": "AWS::Test::TestModel",
     "resourceTypeVersion": "1.0",
-    "requestContext": {},
+    "callbackContext": {},
     "requestData": {
         "callerCredentials": {
             "accessKeyId": "IASAYK835GAIFHAHEI23",
             "secretAccessKey": "66iOGPN5LnpZorcLr8Kh25u8AbjHVllv5/poh2O0",
             "sessionToken": "lameHS2vQOknSHWhdFYTxm2eJc1JMn9YBNI4nV4mXue945KPL6DH"
             "fW8EsUQT5zwssYEC1NvYP9yD6Y5s5lKR3chflOHPFsIe6eqg",
-        },
-        "platformCredentials": {
-            "accessKeyId": "32IEHAHFIAG538KYASAI",
-            "secretAccessKey": "0O2hop/5vllVHjbA8u52hK8rLcroZpnL5NPGOi66",
-            "sessionToken": "gqe6eIsFPHOlfhc3RKl5s5Y6Dy9PYvN1CEYsswz5TQUsE8WfHD6L"
-            "PK549euXm4Vn4INBY9nMJ1cJe2mxTYFdhWHSnkOQv2SHemal",
         },
         "providerCredentials": {
             "accessKeyId": "HDI0745692Y45IUTYR78",
@@ -50,12 +47,14 @@ ENTRYPOINT_PAYLOAD = {
     },
     "stackId": "arn:aws:cloudformation:us-east-1:123456789012:stack/SampleStack/e"
     "722ae60-fe62-11e8-9a0e-0ae8cc519968",
+    "snapshotRequested": None,
 }
+TYPE_NAME = "Test::Foo::Bar"
 
 
 @pytest.fixture
 def resource():
-    return Resource(None)
+    return Resource(TYPE_NAME, None)
 
 
 def patch_and_raise(resource, str_to_patch, exc_cls, entrypoint):
@@ -71,12 +70,12 @@ def test_entrypoint_handler_error(resource):
         event = resource.__call__.__wrapped__(  # pylint: disable=no-member
             resource, {}, None
         )
-    assert event["operationStatus"] == OperationStatus.FAILED.value
+    assert event["status"] == OperationStatus.FAILED.value
     assert event["errorCode"] == HandlerErrorCode.InvalidRequest
 
 
 def test_entrypoint_success():
-    resource = Resource(Mock())
+    resource = Resource(TYPE_NAME, Mock())
     event = ProgressEvent(status=OperationStatus.SUCCESS, message="")
     mock_handler = resource.handler(Action.CREATE)(Mock(return_value=event))
 
@@ -90,15 +89,80 @@ def test_entrypoint_success():
 
     assert event == {
         "message": "",
-        "bearerToken": "123456",
-        "operationStatus": OperationStatus.SUCCESS,
+        "status": OperationStatus.SUCCESS.name,  # pylint: disable=no-member
+        "callbackDelaySeconds": 0,
     }
 
     mock_handler.assert_called_once()
 
 
+def test_entrypoint_handler_raises():
+    @dataclass
+    class ResourceModel(BaseModel):
+        a_string: str
+
+        @classmethod
+        def _deserialize(cls, json_data):
+            return cls("test")
+
+    resource = Resource(Mock(), ResourceModel)
+
+    with patch(
+        "cloudformation_cli_python_lib.resource.ProviderLogHandler.setup"
+    ), patch(
+        "cloudformation_cli_python_lib.resource.MetricsPublisherProxy"
+    ) as mock_metrics, patch(
+        "cloudformation_cli_python_lib.resource.Resource._invoke_handler"
+    ) as mock__invoke_handler:
+        mock__invoke_handler.side_effect = InvalidRequest("handler failed")
+        event = resource.__call__.__wrapped__(  # pylint: disable=no-member
+            resource, ENTRYPOINT_PAYLOAD, None
+        )
+
+    mock_metrics.return_value.publish_exception_metric.assert_called_once()
+    assert event == {
+        "errorCode": "InvalidRequest",
+        "message": "handler failed",
+        "status": "FAILED",
+        "callbackDelaySeconds": 0,
+    }
+
+
+def test_entrypoint_non_mutating_action():
+    payload = ENTRYPOINT_PAYLOAD.copy()
+    payload["action"] = "READ"
+    resource = Resource(TYPE_NAME, Mock())
+    event = ProgressEvent(status=OperationStatus.SUCCESS, message="")
+    resource.handler(Action.CREATE)(Mock(return_value=event))
+
+    with patch(
+        "cloudformation_cli_python_lib.resource.ProviderLogHandler.setup"
+    ) as mock_return_progress:
+        resource.__call__.__wrapped__(  # pylint: disable=no-member
+            resource, payload, None
+        )
+    assert mock_return_progress.call_count == 1
+
+
+def test_entrypoint_with_context():
+    payload = ENTRYPOINT_PAYLOAD.copy()
+    payload["callbackContext"] = {"a": "b"}
+    resource = Resource(TYPE_NAME, Mock())
+    event = ProgressEvent(
+        status=OperationStatus.SUCCESS, message="", callbackContext={"c": "d"}
+    )
+    mock_handler = resource.handler(Action.CREATE)(Mock(return_value=event))
+
+    with patch("cloudformation_cli_python_lib.resource.ProviderLogHandler.setup"):
+        resource.__call__.__wrapped__(  # pylint: disable=no-member
+            resource, payload, None
+        )
+
+    mock_handler.assert_called_once()
+
+
 def test_entrypoint_success_without_caller_provider_creds():
-    resource = Resource(Mock())
+    resource = Resource(TYPE_NAME, Mock())
     event = ProgressEvent(status=OperationStatus.SUCCESS, message="")
     resource.handler(Action.CREATE)(Mock(return_value=event))
 
@@ -107,8 +171,8 @@ def test_entrypoint_success_without_caller_provider_creds():
 
     expected = {
         "message": "",
-        "bearerToken": "123456",
-        "operationStatus": OperationStatus.SUCCESS,
+        "status": OperationStatus.SUCCESS,
+        "callbackDelaySeconds": 0,
     }
 
     with patch("cloudformation_cli_python_lib.resource.ProviderLogHandler.setup"):
@@ -130,48 +194,65 @@ def test_entrypoint_success_without_caller_provider_creds():
         assert event == expected
 
 
-@pytest.mark.parametrize(
-    "event,messages", [({}, ("missing", "awsAccountId", "bearerToken", "requestData"))]
-)
-def test__parse_request_invalid_request(resource, event, messages):
+def test_cast_resource_request_invalid_request(resource):
+    request = HandlerRequest.deserialize(ENTRYPOINT_PAYLOAD)
+    request.requestData = None
     with pytest.raises(InvalidRequest) as excinfo:
-        resource._parse_request(event)
+        resource._cast_resource_request(request)
 
-    for msg in messages:
-        assert msg in str(excinfo.value), msg
+    assert "AttributeError" in str(excinfo.value)
 
 
-def test__parse_request_valid_request():
+def test__parse_request_valid_request_and__cast_resource_request():
     mock_model = Mock(spec_set=["_deserialize"])
     mock_model._deserialize.side_effect = [sentinel.state_out1, sentinel.state_out2]
 
-    resource = Resource(mock_model)
+    resource = Resource(TYPE_NAME, mock_model)
 
     with patch(
         "cloudformation_cli_python_lib.resource._get_boto_session"
     ) as mock_session:
         ret = resource._parse_request(ENTRYPOINT_PAYLOAD)
-    session, request, action, callback_context = ret
+    sessions, action, callback_context, request = ret
 
-    mock_session.assert_called_once()
-    assert session is mock_session.return_value
+    mock_session.assert_has_calls(
+        [
+            call(Credentials(**ENTRYPOINT_PAYLOAD["requestData"]["callerCredentials"])),
+            call(
+                Credentials(**ENTRYPOINT_PAYLOAD["requestData"]["providerCredentials"])
+            ),
+        ],
+        any_order=True,
+    )
+
+    # credentials are used when rescheduling, so can't zero them out (for now)
+    assert request.requestData.callerCredentials is not None
+    assert request.requestData.providerCredentials is not None
+
+    caller_sess, provider_sess = sessions
+    assert caller_sess is mock_session.return_value
+    assert provider_sess is mock_session.return_value
+
+    assert action == Action.CREATE
+    assert callback_context == {}
+
+    modeled_request = resource._cast_resource_request(request)
 
     mock_model._deserialize.assert_has_calls(
         [call(sentinel.state_in1), call(sentinel.state_in2)]
     )
-    assert request.desiredResourceState is sentinel.state_out1
-    assert request.previousResourceState is sentinel.state_out2
-    assert request.logicalResourceIdentifier == "myBucket"
-
-    assert action == Action.CREATE
-    assert callback_context == {}
+    assert modeled_request.clientRequestToken == request.bearerToken
+    assert modeled_request.desiredResourceState is sentinel.state_out1
+    assert modeled_request.previousResourceState is sentinel.state_out2
+    assert modeled_request.logicalResourceIdentifier == "myBucket"
+    assert modeled_request.nextToken is None
 
 
 @pytest.mark.parametrize("exc_cls", [Exception, BaseException])
 def test_entrypoint_uncaught_exception(resource, exc_cls):
     with patch("cloudformation_cli_python_lib.resource.ProviderLogHandler.setup"):
         event = patch_and_raise(resource, "_parse_request", exc_cls, resource.__call__)
-    assert event["operationStatus"] == OperationStatus.FAILED
+    assert event["status"] == OperationStatus.FAILED
     assert event["errorCode"] == HandlerErrorCode.InternalFailure
     assert event["message"] == "hahaha"
 
@@ -200,7 +281,13 @@ def test__ensure_serialize_invalid_returns_progress_event():
         HandlerErrorCode.InternalFailure,
         "Object of type Unserializable is not JSON serializable",
     )
-    assert serialized == event._serialize()
+    try:
+        # Python 3.7/3.8
+        assert serialized == event._serialize()
+    except AssertionError:
+        # Python 3.6
+        event.message = "Object of type 'Unserializable' is not JSON serializable"
+        assert serialized == event._serialize()
 
 
 def test_handler_decorator(resource):
@@ -218,20 +305,32 @@ def test__invoke_handler_not_found(resource):
 
 
 def test__invoke_handler_was_found(resource):
-    mock_handler = resource.handler(Action.CREATE)(Mock(return_value=sentinel.response))
+    progress_event = ProgressEvent(status=OperationStatus.IN_PROGRESS)
+    mock_handler = resource.handler(Action.CREATE)(Mock(return_value=progress_event))
 
     resp = resource._invoke_handler(
         sentinel.session, sentinel.request, Action.CREATE, sentinel.context
     )
-    assert resp is sentinel.response
+    assert resp is progress_event
     mock_handler.assert_called_once_with(
         sentinel.session, sentinel.request, sentinel.context
     )
 
 
+@pytest.mark.parametrize("action", [Action.LIST, Action.READ])
+def test__invoke_handler_non_mutating_must_be_synchronous(resource, action):
+    progress_event = ProgressEvent(status=OperationStatus.IN_PROGRESS)
+    resource.handler(action)(Mock(return_value=progress_event))
+    with pytest.raises(Exception) as excinfo:
+        resource._invoke_handler(
+            sentinel.session, sentinel.request, action, sentinel.context
+        )
+    assert excinfo.value.args[0] == "READ and LIST handlers must return synchronously."
+
+
 @pytest.mark.parametrize("event,messages", [({}, ("missing", "credentials"))])
 def test__parse_test_request_invalid_request(resource, event, messages):
-    with pytest.raises(InvalidRequest) as excinfo:
+    with pytest.raises(InternalFailure) as excinfo:
         resource._parse_test_request(event)
 
     for msg in messages:
@@ -254,7 +353,7 @@ def test__parse_test_request_valid_request():
         "callbackContext": None,
     }
 
-    resource = Resource(mock_model)
+    resource = Resource(TYPE_NAME, mock_model)
 
     with patch(
         "cloudformation_cli_python_lib.resource._get_boto_session"
@@ -283,7 +382,7 @@ def test_test_entrypoint_handler_error(resource):
         resource, {}, None
     )
     assert event.status == OperationStatus.FAILED
-    assert event.errorCode == HandlerErrorCode.InvalidRequest
+    assert event.errorCode == HandlerErrorCode.InternalFailure
 
 
 @pytest.mark.parametrize("exc_cls", [Exception, BaseException])
@@ -300,8 +399,9 @@ def test_test_entrypoint_success():
     mock_model = Mock(spec_set=["_deserialize"])
     mock_model._deserialize.side_effect = [None, None]
 
-    resource = Resource(mock_model)
-    mock_handler = resource.handler(Action.CREATE)(Mock(return_value=sentinel.response))
+    resource = Resource(TYPE_NAME, mock_model)
+    progress_event = ProgressEvent(status=OperationStatus.SUCCESS)
+    mock_handler = resource.handler(Action.CREATE)(Mock(return_value=progress_event))
 
     payload = {
         "credentials": {"accessKeyId": "", "secretAccessKey": "", "sessionToken": ""},
@@ -317,7 +417,7 @@ def test_test_entrypoint_success():
     event = resource.test_entrypoint.__wrapped__(  # pylint: disable=no-member
         resource, payload, None
     )
-    assert event is sentinel.response
+    assert event is progress_event
 
     mock_model._deserialize.assert_has_calls([call(None), call(None)])
     mock_handler.assert_called_once()

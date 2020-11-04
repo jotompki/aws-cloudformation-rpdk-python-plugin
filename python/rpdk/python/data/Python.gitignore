@@ -122,3 +122,8 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# contains credentials
+sam-tests/
+
+rpdk.log*

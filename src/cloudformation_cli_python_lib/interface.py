@@ -1,11 +1,9 @@
 import logging
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any, Generic, List, Mapping, MutableMapping, Optional, Type, TypeVar
+from typing import Any, List, Mapping, MutableMapping, Optional, Type
 
 LOG = logging.getLogger(__name__)
-
-T = TypeVar("T")  # pylint: disable=invalid-name
 
 
 class _AutoName(Enum):
@@ -22,6 +20,17 @@ class Action(str, _AutoName):
     UPDATE = auto()
     DELETE = auto()
     LIST = auto()
+
+
+class StandardUnit(str, _AutoName):
+    Count = auto()
+    Milliseconds = auto()
+
+
+class MetricTypes(str, _AutoName):
+    HandlerException = auto()
+    HandlerInvocationCount = auto()
+    HandlerInvocationDuration = auto()
 
 
 class OperationStatus(str, _AutoName):
@@ -48,45 +57,85 @@ class HandlerErrorCode(str, _AutoName):
     InternalFailure = auto()
 
 
+class BaseModel:
+    def _serialize(self) -> Mapping[str, Any]:
+        return {
+            k: self._serialize_item(v)
+            for k, v in self.__dict__.items()
+            if v is not None
+        }
+
+    def _serialize_item(self, v: Any) -> Any:
+        if isinstance(v, list):
+            return self._serialize_list(v)
+        if isinstance(v, BaseModel):
+            return v._serialize()  # pylint: disable=protected-access
+        return v
+
+    def _serialize_list(self, src_list: List[Any]) -> List[Any]:
+        return [self._serialize_item(i) for i in src_list]
+
+    @classmethod
+    def _deserialize(
+        cls: Type["BaseModel"], json_data: Optional[Mapping[str, Any]]
+    ) -> Optional["BaseModel"]:
+        raise NotImplementedError()
+
+
 # pylint: disable=too-many-instance-attributes
 @dataclass
-class ProgressEvent(Generic[T]):
+class ProgressEvent:
     # pylint: disable=invalid-name
     status: OperationStatus
     errorCode: Optional[HandlerErrorCode] = None
     message: str = ""
-    callbackContext: Optional[Mapping[str, Any]] = None
+    callbackContext: Optional[MutableMapping[str, Any]] = None
     callbackDelaySeconds: int = 0
-    resourceModel: Optional[T] = None
-    resourceModels: Optional[List[T]] = None
+    resourceModel: Optional[BaseModel] = None
+    resourceModels: Optional[List[BaseModel]] = None
     nextToken: Optional[str] = None
 
-    def _serialize(
-        self, to_response: bool = False, bearer_token: Optional[str] = None
-    ) -> MutableMapping[str, Any]:
+    def _serialize(self) -> MutableMapping[str, Any]:
         # to match Java serialization, which drops `null` values, and the
         # contract tests currently expect this also
         ser = {k: v for k, v in self.__dict__.items() if v is not None}
+
         # mutate to what's expected in the response
-        if to_response:
-            ser["bearerToken"] = bearer_token
-            ser["operationStatus"] = ser.pop("status")
-            if ser["callbackDelaySeconds"] == 0:
-                del ser["callbackDelaySeconds"]
+
+        ser["status"] = ser.pop("status").name
+
+        if self.resourceModel:
+            # pylint: disable=protected-access
+            ser["resourceModel"] = self.resourceModel._serialize()
+        if self.resourceModels:
+            ser["resourceModels"] = [
+                # pylint: disable=protected-access
+                model._serialize()
+                for model in self.resourceModels
+            ]
+        if self.errorCode:
+            ser["errorCode"] = self.errorCode.name
         return ser
 
     @classmethod
     def failed(
-        cls: Type["ProgressEvent[T]"], error_code: HandlerErrorCode, message: str
-    ) -> "ProgressEvent[T]":
+        cls: Type["ProgressEvent"], error_code: HandlerErrorCode, message: str
+    ) -> "ProgressEvent":
         return cls(status=OperationStatus.FAILED, errorCode=error_code, message=message)
 
 
 @dataclass
-class ResourceHandlerRequest(Generic[T]):
+class BaseResourceHandlerRequest:
     # pylint: disable=invalid-name
     clientRequestToken: str
-    desiredResourceState: Optional[T]
-    previousResourceState: Optional[T]
+    desiredResourceState: Optional[BaseModel]
+    previousResourceState: Optional[BaseModel]
+    desiredResourceTags: Optional[Mapping[str, Any]]
+    previousResourceTags: Optional[Mapping[str, Any]]
+    systemTags: Optional[Mapping[str, Any]]
+    awsAccountId: Optional[str]
     logicalResourceIdentifier: Optional[str]
     nextToken: Optional[str]
+    region: Optional[str]
+    awsPartition: Optional[str]
+    stackId: Optional[str]

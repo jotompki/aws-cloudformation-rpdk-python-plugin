@@ -1,19 +1,21 @@
 import logging
+import os
 import shutil
 import zipfile
 from pathlib import PurePosixPath
-from subprocess import CalledProcessError, run as subprocess_run  # nosec
+from subprocess import PIPE, CalledProcessError, run as subprocess_run  # nosec
 from tempfile import TemporaryFile
 
 import docker
 from docker.errors import APIError, ContainerError, ImageLoadError
+from requests.exceptions import ConnectionError as RequestsConnectionError
 from rpdk.core.data_loaders import resource_stream
 from rpdk.core.exceptions import DownstreamError, SysExitRecommendedError
 from rpdk.core.init import input_with_validation
 from rpdk.core.jsonutils.resolver import ContainerType, resolve_models
 from rpdk.core.plugin_base import LanguagePlugin
 
-from .resolver import models_in_properties, translate_type
+from .resolver import contains_model, translate_type
 
 LOG = logging.getLogger(__name__)
 
@@ -42,33 +44,38 @@ class Python36LanguagePlugin(LanguagePlugin):
             trim_blocks=True, lstrip_blocks=True, keep_trailing_newline=True
         )
         self.env.filters["translate_type"] = translate_type
-        self.env.filters["models_in_properties"] = models_in_properties
+        self.env.filters["contains_model"] = contains_model
         self.env.globals["ContainerType"] = ContainerType
         self.namespace = None
         self.package_name = None
         self.package_root = None
-        self._use_docker = True
+        self._use_docker = None
+        self._protocol_version = "2.0.0"
 
     def _init_from_project(self, project):
         self.namespace = tuple(s.lower() for s in project.type_info)
         self.package_name = "_".join(self.namespace)
-        self._use_docker = project.settings.get("use_docker", True)
+        self._use_docker = project.settings.get("use_docker")
         self.package_root = project.root / "src"
 
-    def _prompt_for_use_docker(self, project):
-        self._use_docker = input_with_validation(
+    def _init_settings(self, project):
+        LOG.debug("Writing settings")
+
+        self._use_docker = self._use_docker or input_with_validation(
             "Use docker for platform-independent packaging (Y/n)?\n",
             validate_no,
             "This is highly recommended unless you are experienced \n"
             "with cross-platform Python packaging.",
         )
+
         project.settings["use_docker"] = self._use_docker
+        project.settings["protocolVersion"] = self._protocol_version
 
     def init(self, project):
         LOG.debug("Init started")
 
         self._init_from_project(project)
-        self._prompt_for_use_docker(project)
+        self._init_settings(project)
 
         project.runtime = self.RUNTIME
         project.entrypoint = self.ENTRY_POINT.format(self.package_name)
@@ -95,7 +102,9 @@ class Python36LanguagePlugin(LanguagePlugin):
         handler_package_path.mkdir(parents=True, exist_ok=True)
         _copy_resource(handler_package_path / "__init__.py")
         _render_template(
-            handler_package_path / "handlers.py", support_lib_pkg=SUPPORT_LIB_PKG
+            handler_package_path / "handlers.py",
+            support_lib_pkg=SUPPORT_LIB_PKG,
+            type_name=project.type_name,
         )
         # models.py produced by generate
 
@@ -198,17 +207,6 @@ class Python36LanguagePlugin(LanguagePlugin):
         LOG.debug("Dependencies build finished")
 
     @staticmethod
-    def _check_for_support_lib_sdist(base_path):
-        # TODO: remove this check (and exception) when published to PyPI
-        sdist = base_path / f"{SUPPORT_LIB_NAME}-0.0.1.tar.gz"
-        try:
-            sdist.resolve(strict=True)
-        except FileNotFoundError:
-            raise StandardDistNotFoundError(
-                f"Could not find packaged CloudFormation support library: {sdist}\n"
-            )
-
-    @staticmethod
     def _make_pip_command(base_path):
         return [
             "pip",
@@ -217,9 +215,6 @@ class Python36LanguagePlugin(LanguagePlugin):
             "--no-color",
             "--disable-pip-version-check",
             "--upgrade",
-            # TODO: remove find-links when published to PyPI
-            "--find-links",
-            str(base_path),
             "--requirement",
             str(base_path / "requirements.txt"),
             "--target",
@@ -228,8 +223,6 @@ class Python36LanguagePlugin(LanguagePlugin):
 
     @classmethod
     def _docker_build(cls, external_path):
-        cls._check_for_support_lib_sdist(external_path)
-
         internal_path = PurePosixPath("/project")
         command = " ".join(cls._make_pip_command(internal_path))
         LOG.debug("command is '%s'", command)
@@ -249,7 +242,17 @@ class Python36LanguagePlugin(LanguagePlugin):
                 auto_remove=True,
                 volumes=volumes,
                 stream=True,
+                user=f"{os.geteuid()}:{os.getgid()}",
             )
+        except RequestsConnectionError as e:
+            # it seems quite hard to reliably extract the cause from
+            # ConnectionError. we replace it with a friendlier error message
+            # and preserve the cause for debug traceback
+            cause = RequestsConnectionError(
+                "Could not connect to docker - is it running?"
+            )
+            cause.__cause__ = e
+            raise DownstreamError("Error running docker build") from cause
         except (ContainerError, ImageLoadError, APIError) as e:
             raise DownstreamError("Error running docker build") from e
         LOG.debug("Build running. Output:")
@@ -258,14 +261,13 @@ class Python36LanguagePlugin(LanguagePlugin):
 
     @classmethod
     def _pip_build(cls, base_path):
-        cls._check_for_support_lib_sdist(base_path)
         command = cls._make_pip_command(base_path)
         LOG.debug("command is '%s'", command)
 
         LOG.warning("Starting pip build.")
         try:
             completed_proc = subprocess_run(  # nosec
-                command, capture_output=True, cwd=base_path, check=True
+                command, stdout=PIPE, stderr=PIPE, cwd=base_path, check=True
             )
         except (FileNotFoundError, CalledProcessError) as e:
             raise DownstreamError("pip build failed") from e

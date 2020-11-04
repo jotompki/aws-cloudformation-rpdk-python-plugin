@@ -1,6 +1,8 @@
-# DEVELOPER PREVIEW
+# AWS CloudFormation Resource Provider Python Plugin
 
-We're excited to share our progress with adding new languages to the CloudFormation CLI! This plugin is an early preview, and not ready for production use.
+The CloudFormation CLI (cfn) allows you to author your own resource providers that can be used by CloudFormation.
+
+This plugin library helps to provide Python runtime bindings for the execution of your providers by CloudFormation.
 
 ## AWS CloudFormation Resource Provider Python Plugin
 
@@ -8,20 +10,17 @@ The CloudFormation Resource Provider Development Kit (RPDK) allows you to author
 
 This plugin library helps to provide runtime bindings for the execution of your providers by CloudFormation.
 
+[![Build Status](https://travis-ci.com/aws-cloudformation/cloudformation-cli-python-plugin.svg?branch=master)](https://travis-ci.com/aws-cloudformation/cloudformation-cli-python-plugin)
+
 Installation
 ------------
 
-Because this is a developer preview, you can't install it from pypi (the version there will not work)
-You can still install the plugin using [pip](https://pypi.org/project/pip/) from GitHub.
-
 ```bash
-pip install git+https://github.com/aws-cloudformation/aws-cloudformation-rpdk-python-plugin.git#egg=cloudformation-cli-python-plugin
+pip install cloudformation-cli-python-plugin
 ```
 
 Howto
 -----
-
-The support library, `cloudformation-cli-python-lib` must be packaged and present in the project's directory. Packaging can be done by running the `package_lib.sh` script. Example run:
 
 ```
 $ cfn init
@@ -41,9 +40,8 @@ This is highly recommended unless you are experienced
 with cross-platform Python packaging.
 >> y
 Initialized a new project in <>
-$ cp ../cloudformation-cli-python-lib-0.0.1.tar.gz .
 $ cfn submit --dry-run
-$ cat test.json
+$ cat <<EOT > test.json
 {
   "credentials": {
     "accessKeyId": "",
@@ -54,14 +52,15 @@ $ cat test.json
   "request": {
     "clientRequestToken": "ecba020e-b2e6-4742-a7d0-8a06ae7c4b2b",
     "desiredResourceState": {
-      "Title": "foo",
-      "Description": "bar"
+      "Title": "This_Is_The_Title_For_My_Example",
+      "TestCode": "NOT_STARTED"
     },
     "previousResourceState": null,
     "logicalResourceIdentifier": null
   },
   "callbackContext": null
 }
+EOT
 $ sam local invoke TestEntrypoint --event test.json
 ```
 
